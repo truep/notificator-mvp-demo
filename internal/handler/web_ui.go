@@ -498,4 +498,3 @@ const EnhancedWebUI = `<!DOCTYPE html>
     </script>
 </body>
 </html>`
-

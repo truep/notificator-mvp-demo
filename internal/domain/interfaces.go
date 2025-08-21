@@ -20,7 +20,13 @@ type NotificationRepository interface {
 	ReadPendingMessages(ctx context.Context, userID int64, login string, count int64) ([]StreamMessage, error)
 
 	// ReadNewMessages читает новые сообщения из stream с блокировкой
-	ReadNewMessages(ctx context.Context, userID int64, login string, blockTime time.Duration, count int64) ([]StreamMessage, error)
+	ReadNewMessages(
+		ctx context.Context,
+		userID int64,
+		login string,
+		blockTime time.Duration,
+		count int64,
+	) ([]StreamMessage, error)
 
 	// AckMessage подтверждает прочтение сообщения и удаляет его
 	AckMessage(ctx context.Context, userID int64, login string, streamID, notificationID string) error
@@ -29,7 +35,13 @@ type NotificationRepository interface {
 	CleanupExpiredNotifications(ctx context.Context, userID int64, login string, limit int64) (int64, error)
 
 	// ReclaimPendingMessages перехватывает зависшие сообщения
-	ReclaimPendingMessages(ctx context.Context, userID int64, login string, minIdleTime time.Duration, count int64) ([]StreamMessage, error)
+	ReclaimPendingMessages(
+		ctx context.Context,
+		userID int64,
+		login string,
+		minIdleTime time.Duration,
+		count int64,
+	) ([]StreamMessage, error)
 
 	// GetAllUserKeys возвращает все пользовательские ключи для джанитора
 	GetAllUserKeys(ctx context.Context) ([]string, error)

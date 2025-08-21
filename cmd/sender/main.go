@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -99,7 +100,11 @@ func sendNotification(client *http.Client, addr string, userID int64, login, mes
 	if err != nil {
 		return fmt.Errorf("ошибка HTTP запроса: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Error(err.Error(), slog.Any("error", err))
+		}
+	}()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

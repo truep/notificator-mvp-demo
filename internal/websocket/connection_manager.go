@@ -41,7 +41,9 @@ func (cm *ConnectionManager) AddClient(userID int64, login string, conn domain.W
 	// Если клиент уже подключен, закрываем старое соединение
 	if existing, exists := cm.clients[key]; exists {
 		cm.logger.Info("Закрытие старого соединения для клиента", "user_id", userID, "login", login)
-		existing.Connection.Close()
+		if err := existing.Connection.Close();err != nil {
+			slog.Error(err.Error(), slog.Any("error", err))
+		}
 	}
 
 	cm.clients[key] = &ClientInfo{
@@ -146,4 +148,3 @@ func (cm *ConnectionManager) GetUniqueUsers() []domain.Target {
 func makeClientKey(userID int64, login string) string {
 	return domain.UserKey(userID, login)
 }
-

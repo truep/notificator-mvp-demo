@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
@@ -55,7 +56,11 @@ func main() {
 	if err != nil {
 		log.Fatal("Ошибка подключения:", err)
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			slog.Error(err.Error(), slog.Any("error", err))
+		}
+	}()
 
 	fmt.Printf("Подключен как пользователь %d (%s)\n", *userID, *login)
 	fmt.Println("Команды:")
@@ -100,7 +105,12 @@ func main() {
 		select {
 		case <-interrupt:
 			fmt.Println("\nЗавершение...")
-			conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+			if err := conn.WriteMessage(
+				websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+			); err != nil {
+				log.Printf(" Ошибка записи сообщения в websocket: %v", err)
+			}
 			return
 
 		case cmd := <-commands:
@@ -114,7 +124,8 @@ func main() {
 func handleMessage(msg *PushMessage, conn *websocket.Conn, autoAck bool) {
 	switch msg.Type {
 	case "notification.push":
-		if msg.Data.Status == "unread" {
+		switch msg.Data.Status {
+		case "unread":
 			fmt.Printf("\n🔔 Новое уведомление:\n")
 			fmt.Printf("  ID: %s\n", msg.Data.NotificationID)
 			fmt.Printf("  Источник: %s\n", msg.Data.Source)
@@ -130,7 +141,7 @@ func handleMessage(msg *PushMessage, conn *websocket.Conn, autoAck bool) {
 			} else {
 				fmt.Printf("  Для подтверждения: ack %s %s\n", msg.Data.NotificationID, msg.Data.StreamID)
 			}
-		} else if msg.Data.Status == "auto_cleared" {
+		case "auto_cleared":
 			fmt.Printf("\n🗑️ Просроченное уведомление (автоматически удалено):\n")
 			fmt.Printf("  ID: %s\n", msg.Data.NotificationID)
 			fmt.Printf("  Stream ID: %s\n", msg.Data.StreamID)

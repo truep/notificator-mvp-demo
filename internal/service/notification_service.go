@@ -27,7 +27,11 @@ func NewNotificationService(repo domain.NotificationRepository, logger *slog.Log
 }
 
 // CreateNotifications создает уведомления для списка получателей
-func (s *NotificationService) CreateNotifications(ctx context.Context, req *domain.NotifyRequest, idempotencyKey string) (*domain.NotifyResponse, error) {
+func (s *NotificationService) CreateNotifications(
+	ctx context.Context,
+	req *domain.NotifyRequest,
+	idempotencyKey string,
+) (*domain.NotifyResponse, error) {
 	// Проверяем идемпотентность если ключ предоставлен
 	if idempotencyKey != "" {
 		if cached, err := s.repo.GetIdempotencyResult(ctx, idempotencyKey); err == nil && cached != nil {
@@ -97,7 +101,12 @@ func (s *NotificationService) CreateNotifications(ctx context.Context, req *doma
 }
 
 // HandleWebSocketConnection обрабатывает WebSocket подключение клиента
-func (s *NotificationService) HandleWebSocketConnection(ctx context.Context, userID int64, login string, conn domain.WebSocketConnection) error {
+func (s *NotificationService) HandleWebSocketConnection(
+	ctx context.Context,
+	userID int64,
+	login string,
+	conn domain.WebSocketConnection,
+) error {
 	s.logger.Info("Новое WebSocket подключение", "user_id", userID, "login", login)
 
 	// Убеждаемся что Consumer Group существует
@@ -132,7 +141,13 @@ func (s *NotificationService) HandleWebSocketConnection(ctx context.Context, use
 }
 
 // handleClientMessages обрабатывает сообщения от клиента (ACK)
-func (s *NotificationService) handleClientMessages(ctx context.Context, userID int64, login string, conn domain.WebSocketConnection, errChan chan<- error) {
+func (s *NotificationService) handleClientMessages(
+	ctx context.Context,
+	userID int64,
+	login string,
+	conn domain.WebSocketConnection,
+	errChan chan<- error,
+) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -153,7 +168,13 @@ func (s *NotificationService) handleClientMessages(ctx context.Context, userID i
 }
 
 // handleNotificationDelivery доставляет уведомления клиенту
-func (s *NotificationService) handleNotificationDelivery(ctx context.Context, userID int64, login string, conn domain.WebSocketConnection, errChan chan<- error) {
+func (s *NotificationService) handleNotificationDelivery(
+	ctx context.Context,
+	userID int64,
+	login string,
+	conn domain.WebSocketConnection,
+	errChan chan<- error,
+) {
 	// Сначала отправляем все pending уведомления
 	if err := s.deliverPendingMessages(ctx, userID, login, conn); err != nil {
 		errChan <- fmt.Errorf("ошибка доставки pending сообщений: %w", err)
@@ -185,7 +206,12 @@ func (s *NotificationService) handleNotificationDelivery(ctx context.Context, us
 }
 
 // deliverPendingMessages доставляет все pending сообщения клиенту
-func (s *NotificationService) deliverPendingMessages(ctx context.Context, userID int64, login string, conn domain.WebSocketConnection) error {
+func (s *NotificationService) deliverPendingMessages(
+	ctx context.Context,
+	userID int64,
+	login string,
+	conn domain.WebSocketConnection,
+) error {
 	messages, err := s.repo.ReadPendingMessages(ctx, userID, login, 100)
 	if err != nil {
 		return fmt.Errorf("ошибка чтения pending сообщений: %w", err)
@@ -253,7 +279,13 @@ func (s *NotificationService) sendMessageToClient(conn domain.WebSocketConnectio
 }
 
 // handleReadAck обрабатывает подтверждение прочтения от клиента
-func (s *NotificationService) handleReadAck(ctx context.Context, userID int64, login string, readEvent *domain.ReadEvent, conn domain.WebSocketConnection) error {
+func (s *NotificationService) handleReadAck(
+	ctx context.Context,
+	userID int64,
+	login string,
+	readEvent *domain.ReadEvent,
+	conn domain.WebSocketConnection,
+) error {
 	if readEvent.Type != domain.MessageTypeNotificationRead {
 		return fmt.Errorf("неожиданный тип сообщения: %s", readEvent.Type)
 	}

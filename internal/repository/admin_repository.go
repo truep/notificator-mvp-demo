@@ -11,7 +11,11 @@ import (
 )
 
 // GetPendingNotifications получает список pending уведомлений для пользователя
-func (r *RedisRepository) GetPendingNotifications(ctx context.Context, userID int64, login string) ([]domain.StreamMessage, error) {
+func (r *RedisRepository) GetPendingNotifications(
+	ctx context.Context,
+	userID int64,
+	login string,
+) ([]domain.StreamMessage, error) {
 	// Просто вернем pending сообщения используя существующий метод
 	return r.ReadPendingMessages(ctx, userID, login, 100)
 }
@@ -64,4 +68,3 @@ func parseUserKey(userKey string) (int64, string, error) {
 
 	return userID, parts[1], nil
 }
-

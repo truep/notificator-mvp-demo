@@ -23,7 +23,12 @@ type Handlers struct {
 }
 
 // NewHandlers создает новый экземпляр Handlers
-func NewHandlers(service domain.NotificationService, repo domain.NotificationRepository, connectionManager *websocketManager.ConnectionManager, logger *slog.Logger) *Handlers {
+func NewHandlers(
+	service domain.NotificationService,
+	repo domain.NotificationRepository,
+	connectionManager *websocketManager.ConnectionManager,
+	logger *slog.Logger,
+) *Handlers {
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
 			// Для MVP разрешаем любые origins
@@ -112,7 +117,11 @@ func (h *Handlers) WebSocketHandler(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("Ошибка апгрейда до WebSocket", "error", err)
 		return
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			slog.Error(err.Error(), slog.Any("error", err))
+		}
+	}()
 
 	h.logger.Info("WebSocket соединение установлено", "user_id", userID, "login", login)
 
@@ -151,7 +160,10 @@ func (h *Handlers) HealthHandler(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) IndexHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(EnhancedWebUI))
+	_, err := w.Write([]byte(EnhancedWebUI))
+	if err != nil {
+		slog.Error(err.Error(), slog.Any("error", err))
+	}
 }
 
 // ConnectedClientsHandler возвращает список подключенных клиентов

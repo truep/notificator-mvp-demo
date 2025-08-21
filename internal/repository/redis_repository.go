@@ -27,7 +27,11 @@ func NewRedisRepository(client *redis.Client) *RedisRepository {
 }
 
 // CreateNotification создает уведомление для одного получателя
-func (r *RedisRepository) CreateNotification(ctx context.Context, payload *domain.NotificationPayload, target domain.Target) (string, error) {
+func (r *RedisRepository) CreateNotification(
+	ctx context.Context,
+	payload *domain.NotificationPayload,
+	target domain.Target,
+) (string, error) {
 	// Генерируем UUID для уведомления
 	notificationID := uuid.New().String()
 	payload.NotificationID = notificationID
@@ -99,7 +103,10 @@ func (r *RedisRepository) CreateNotification(ctx context.Context, payload *domai
 }
 
 // GetNotification получает уведомление по ID
-func (r *RedisRepository) GetNotification(ctx context.Context, notificationID string) (*domain.NotificationPayload, error) {
+func (r *RedisRepository) GetNotification(
+	ctx context.Context,
+	notificationID string,
+) (*domain.NotificationPayload, error) {
 	key := domain.NotificationKey(notificationID)
 
 	payloadStr, err := r.client.Get(ctx, key).Result()
@@ -131,7 +138,12 @@ func (r *RedisRepository) EnsureConsumerGroup(ctx context.Context, userID int64,
 }
 
 // ReadPendingMessages читает pending сообщения для consumer
-func (r *RedisRepository) ReadPendingMessages(ctx context.Context, userID int64, login string, count int64) ([]domain.StreamMessage, error) {
+func (r *RedisRepository) ReadPendingMessages(
+	ctx context.Context,
+	userID int64,
+	login string,
+	count int64,
+) ([]domain.StreamMessage, error) {
 	streamKey := domain.StreamKey(userID, login)
 	consumerID := domain.ConsumerID(userID)
 
@@ -155,7 +167,13 @@ func (r *RedisRepository) ReadPendingMessages(ctx context.Context, userID int64,
 }
 
 // ReadNewMessages читает новые сообщения из stream с блокировкой
-func (r *RedisRepository) ReadNewMessages(ctx context.Context, userID int64, login string, blockTime time.Duration, count int64) ([]domain.StreamMessage, error) {
+func (r *RedisRepository) ReadNewMessages(
+	ctx context.Context,
+	userID int64,
+	login string,
+	blockTime time.Duration,
+	count int64,
+) ([]domain.StreamMessage, error) {
 	streamKey := domain.StreamKey(userID, login)
 	consumerID := domain.ConsumerID(userID)
 
@@ -179,7 +197,12 @@ func (r *RedisRepository) ReadNewMessages(ctx context.Context, userID int64, log
 }
 
 // AckMessage подтверждает прочтение сообщения и удаляет его
-func (r *RedisRepository) AckMessage(ctx context.Context, userID int64, login string, streamID, notificationID string) error {
+func (r *RedisRepository) AckMessage(
+	ctx context.Context,
+	userID int64,
+	login string,
+	streamID, notificationID string,
+) error {
 	streamKey := domain.StreamKey(userID, login)
 	notificationKey := domain.NotificationKey(notificationID)
 	ttlSchedulerKey := domain.TTLSchedulerKey(userID, login)
@@ -214,7 +237,12 @@ func (r *RedisRepository) AckMessage(ctx context.Context, userID int64, login st
 }
 
 // CleanupExpiredNotifications удаляет просроченные уведомления
-func (r *RedisRepository) CleanupExpiredNotifications(ctx context.Context, userID int64, login string, limit int64) (int64, error) {
+func (r *RedisRepository) CleanupExpiredNotifications(
+	ctx context.Context,
+	userID int64,
+	login string,
+	limit int64,
+) (int64, error) {
 	ttlSchedulerKey := domain.TTLSchedulerKey(userID, login)
 	streamKey := domain.StreamKey(userID, login)
 	now := time.Now().Unix()
@@ -276,7 +304,13 @@ func (r *RedisRepository) CleanupExpiredNotifications(ctx context.Context, userI
 }
 
 // ReclaimPendingMessages перехватывает зависшие сообщения
-func (r *RedisRepository) ReclaimPendingMessages(ctx context.Context, userID int64, login string, minIdleTime time.Duration, count int64) ([]domain.StreamMessage, error) {
+func (r *RedisRepository) ReclaimPendingMessages(
+	ctx context.Context,
+	userID int64,
+	login string,
+	minIdleTime time.Duration,
+	count int64,
+) ([]domain.StreamMessage, error) {
 	streamKey := domain.StreamKey(userID, login)
 	consumerID := domain.ConsumerID(userID)
 	minIdleMs := minIdleTime.Milliseconds()
@@ -392,7 +426,10 @@ func (r *RedisRepository) GetIdempotencyResult(ctx context.Context, key string) 
 }
 
 // convertRedisStreamsToMessages конвертирует ответ Redis в наш формат
-func (r *RedisRepository) convertRedisStreamsToMessages(ctx context.Context, streams []redis.XStream) ([]domain.StreamMessage, error) {
+func (r *RedisRepository) convertRedisStreamsToMessages(
+	ctx context.Context,
+	streams []redis.XStream,
+) ([]domain.StreamMessage, error) {
 	var messages []domain.StreamMessage
 
 	for _, stream := range streams {
