@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -111,7 +112,7 @@ func (r *RedisRepository) GetNotification(
 
 	payloadStr, err := r.client.Get(ctx, key).Result()
 	if err != nil {
-		if err == redis.Nil {
+		if errors.Is(err, redis.Nil) {
 			return nil, nil // Уведомление истекло или не существует
 		}
 		return nil, fmt.Errorf("ошибка получения уведомления: %w", err)

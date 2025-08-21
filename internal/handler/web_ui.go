@@ -399,7 +399,7 @@ const EnhancedWebUI = `<!DOCTYPE html>
                             const messages = pending[userKey];
                             html += '<div style="font-weight: bold; margin-top: 10px;">' + userKey + ' (' + messages.length + ' pending)</div>';
                             messages.forEach(msg => {
-                                const payload = msg.payload;
+                                const payload = msg.Payload;
                                 html += '<div class="pending-item">' +
                                     '<div>' + (payload ? payload.message : 'Expired') + '</div>' +
                                     '<small>ID: ' + (payload ? payload.notification_id.substring(0, 8) + '...' : 'N/A') + '</small>' +
