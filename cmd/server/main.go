@@ -62,6 +62,7 @@ func main() {
 	mux.HandleFunc("GET /api/v1/admin/clients", handlers.ConnectedClientsHandler)
 	mux.HandleFunc("GET /api/v1/admin/pending", handlers.PendingNotificationsHandler)
 	mux.HandleFunc("GET /api/v1/admin/users", handlers.AvailableUsersHandler)
+	mux.HandleFunc("GET /api/v1/admin/history", handlers.HistoryHandler)
 
 	mux.HandleFunc("GET /", handlers.IndexHandler) // Для тестового клиента
 

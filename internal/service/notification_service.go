@@ -181,6 +181,11 @@ func (s *NotificationService) handleNotificationDelivery(
 		return
 	}
 
+	// Затем отправляем последние 100 сообщений из истории с признаком прочтения
+	if err := s.deliverLastMessagesWithRead(ctx, userID, login, conn, 100); err != nil {
+		s.logger.Warn("Ошибка начальной синхронизации XRANGE", "error", err)
+	}
+
 	// Затем слушаем новые уведомления в цикле
 	for {
 		select {
@@ -228,6 +233,84 @@ func (s *NotificationService) deliverPendingMessages(
 	return nil
 }
 
+// deliverLastMessagesWithRead отправляет последние N сообщений с признаком read/unread
+func (s *NotificationService) deliverLastMessagesWithRead(
+	ctx context.Context,
+	userID int64,
+	login string,
+	conn domain.WebSocketConnection,
+	count int64,
+) error {
+	messages, err := s.repo.RangeLastMessages(ctx, userID, login, count)
+	if err != nil {
+		return err
+	}
+
+	// Собираем список notification_id
+	ids := make([]string, 0, len(messages))
+	for _, m := range messages {
+		if m.Payload != nil {
+			ids = append(ids, m.Payload.NotificationID)
+		}
+	}
+
+	readMap, err := s.repo.GetReadStatuses(ctx, userID, login, ids)
+	if err != nil {
+		return err
+	}
+
+	for _, msg := range messages {
+		// Мы хотим отправить, даже если payload истёк (auto_cleared)
+		if err := s.sendMessageToClientWithRead(conn, &msg, readMap); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// sendMessageToClientWithRead как sendMessageToClient, но выставляет Read
+func (s *NotificationService) sendMessageToClientWithRead(
+	conn domain.WebSocketConnection,
+	msg *domain.StreamMessage,
+	readMap map[string]bool,
+) error {
+	var pushPayload domain.PushPayload
+	var read bool
+
+	if msg.Payload != nil {
+		read = readMap[msg.Payload.NotificationID]
+		pushPayload = domain.PushPayload{
+			NotificationID: msg.Payload.NotificationID,
+			StreamID:       msg.ID,
+			Message:        msg.Payload.Message,
+			CreatedAt:      msg.Payload.CreatedAt,
+			Source:         msg.Payload.Source,
+			Status:         domain.StatusUnread,
+			Read:           read,
+		}
+	} else {
+		// Истёкший payload
+		nid := ""
+		if nidVal, ok := msg.Fields["nid"]; ok {
+			if nidStr, ok := nidVal.(string); ok {
+				nid = nidStr
+			}
+		}
+		pushPayload = domain.PushPayload{
+			NotificationID: nid,
+			StreamID:       msg.ID,
+			Status:         domain.StatusAutoCleared,
+			Read:           true,
+		}
+	}
+
+	pushMessage := domain.PushMessage{Type: domain.MessageTypeNotificationPush, Data: pushPayload}
+	if err := conn.WriteJSON(pushMessage); err != nil {
+		return fmt.Errorf("ошибка отправки сообщения в WebSocket: %w", err)
+	}
+	return nil
+}
+
 // sendMessageToClient отправляет сообщение клиенту через WebSocket
 func (s *NotificationService) sendMessageToClient(conn domain.WebSocketConnection, msg *domain.StreamMessage) error {
 	var pushPayload domain.PushPayload
@@ -242,6 +325,7 @@ func (s *NotificationService) sendMessageToClient(conn domain.WebSocketConnectio
 			CreatedAt:      msg.Payload.CreatedAt,
 			Source:         msg.Payload.Source,
 			Status:         domain.StatusUnread,
+			Read:           false,
 		}
 		status = domain.StatusUnread
 	} else {
@@ -257,6 +341,7 @@ func (s *NotificationService) sendMessageToClient(conn domain.WebSocketConnectio
 			NotificationID: nid,
 			StreamID:       msg.ID,
 			Status:         domain.StatusAutoCleared,
+			Read:           true,
 		}
 		status = domain.StatusAutoCleared
 	}

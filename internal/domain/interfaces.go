@@ -57,6 +57,12 @@ type NotificationRepository interface {
 
 	// GetAllPendingNotifications получает pending уведомления для всех пользователей
 	GetAllPendingNotifications(ctx context.Context) (map[string][]StreamMessage, error)
+
+	// RangeLastMessages возвращает последние N сообщений из стрима пользователя
+	RangeLastMessages(ctx context.Context, userID int64, login string, count int64) ([]StreamMessage, error)
+
+	// GetReadStatuses возвращает статус прочтения для списка notification_id
+	GetReadStatuses(ctx context.Context, userID int64, login string, notificationIDs []string) (map[string]bool, error)
 }
 
 // NotificationService определяет бизнес-логику работы с уведомлениями

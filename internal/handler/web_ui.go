@@ -42,6 +42,9 @@ const EnhancedWebUI = `<!DOCTYPE html>
         .form-row { margin: 10px 0; }
         .user-list { max-height: 200px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; margin: 10px 0; }
         .online-indicator { display: inline-block; width: 8px; height: 8px; background: #28a745; border-radius: 50%; margin-right: 5px; }
+        .badge { padding: 2px 6px; border-radius: 10px; font-size: 12px; margin-left: 8px; }
+        .badge.read { background: #e2f0d9; color: #2e7d32; }
+        .badge.unread { background: #ffe0b2; color: #ef6c00; }
     </style>
 </head>
 <body>
@@ -173,6 +176,14 @@ const EnhancedWebUI = `<!DOCTYPE html>
                 <div class="refresh-status" id="pendingRefreshStatus"></div>
             </div>
         </div>
+
+        <div class="section">
+            <h2>User History (last 100)</h2>
+            <div>
+                <button onclick="loadHistory()" class="secondary">Load History</button>
+            </div>
+            <div id="historyList" class="messages"></div>
+        </div>
     </div>
 
     <script>
@@ -211,7 +222,7 @@ const EnhancedWebUI = `<!DOCTYPE html>
                 addMessage('📨 Received: ' + JSON.stringify(msg, null, 2), 'received');
                 
                 // Auto-ACK notifications
-                if (msg.type === 'notification.push' && msg.data.status === 'unread') {
+                if (msg.type === 'notification.push' && msg.data.status === 'unread' && !msg.data.read) {
                     setTimeout(() => {
                         const ackMsg = {
                             type: 'notification.read',
@@ -399,7 +410,7 @@ const EnhancedWebUI = `<!DOCTYPE html>
                             const messages = pending[userKey];
                             html += '<div style="font-weight: bold; margin-top: 10px;">' + userKey + ' (' + messages.length + ' pending)</div>';
                             messages.forEach(msg => {
-                                const payload = msg.Payload;
+                                const payload = msg.payload;
                                 html += '<div class="pending-item">' +
                                     '<div>' + (payload ? payload.message : 'Expired') + '</div>' +
                                     '<small>ID: ' + (payload ? payload.notification_id.substring(0, 8) + '...' : 'N/A') + '</small>' +
@@ -486,6 +497,35 @@ const EnhancedWebUI = `<!DOCTYPE html>
             if (document.getElementById('autoRefreshPending').checked) {
                 autoRefreshIntervals.pending = setInterval(refreshPending, 5000);
             }
+        }
+
+        function loadHistory() {
+            const userId = document.getElementById('userId').value;
+            const login = document.getElementById('login').value;
+            if (!userId || !login) {
+                alert('Please enter User ID and Login');
+                return;
+            }
+            fetch('/api/v1/admin/history?user_id=' + encodeURIComponent(userId) + '&login=' + encodeURIComponent(login))
+                .then(r => r.json())
+                .then(data => {
+                    const list = document.getElementById('historyList');
+                    const items = data.history || [];
+                    if (items.length === 0) {
+                        list.innerHTML = '<div style="text-align:center;color:#666;">No history</div>';
+                        return;
+                    }
+                    list.innerHTML = items.map(it => {
+                        const payload = it.payload;
+                        const read = !!it.read;
+                        const badge = '<span class="badge ' + (read ? 'read' : 'unread') + '">' + (read ? 'READ' : 'UNREAD') + '</span>';
+                        const text = payload ? (payload.message) : 'Expired';
+                        return '<div class="message"><div>' + text + ' ' + badge + '</div><small>ID: ' + it.id + '</small></div>';
+                    }).join('');
+                })
+                .catch(err => {
+                    addMessage('❌ Error loading history: ' + err, 'error');
+                });
         }
 
         // Cleanup on page unload

@@ -61,6 +61,8 @@ func (r *RedisRepository) CreateNotification(
 	// 3. Добавляем ссылку в персональный стрим
 	xAddCmd := pipe.XAdd(ctx, &redis.XAddArgs{
 		Stream: streamKey,
+		MaxLen: 100,
+		Approx: false,
 		Values: map[string]interface{}{
 			"nid":        notificationID,
 			"created_at": payload.CreatedAt.Format(time.RFC3339),
@@ -205,31 +207,23 @@ func (r *RedisRepository) AckMessage(
 	streamID, notificationID string,
 ) error {
 	streamKey := domain.StreamKey(userID, login)
-	notificationKey := domain.NotificationKey(notificationID)
-	ttlSchedulerKey := domain.TTLSchedulerKey(userID, login)
-	ttlEntry := domain.TTLSchedulerEntry(streamID, notificationID)
+	stateKey := domain.NotificationStateKey(userID, login)
 
 	// Выполняем операции в пайплайне
 	pipe := r.client.Pipeline()
 
-	// 1. Подтверждаем сообщение в Consumer Group
+	// 1. Подтверждаем сообщение в Consumer Group (оставляем запись в стриме)
 	pipe.XAck(ctx, streamKey, domain.ConsumerGroupName, streamID)
 
-	// 2. Удаляем сообщение из стрима
-	pipe.XDel(ctx, streamKey, streamID)
-
-	// 3. Удаляем payload уведомления
-	pipe.Del(ctx, notificationKey)
-
-	// 4. Удаляем из TTL планировщика
-	pipe.ZRem(ctx, ttlSchedulerKey, ttlEntry)
+	// 2. Помечаем уведомление как прочитанное
+	pipe.HSet(ctx, stateKey, notificationID, "read")
 
 	_, err := pipe.Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("ошибка подтверждения сообщения: %w", err)
 	}
 
-	slog.Debug("Подтверждено прочтение уведомления",
+	slog.Debug("Помечено прочтение уведомления",
 		"notification_id", notificationID,
 		"stream_id", streamID,
 		"user", domain.UserKey(userID, login))
@@ -455,4 +449,72 @@ func (r *RedisRepository) convertRedisStreamsToMessages(
 	}
 
 	return messages, nil
+}
+
+// RangeLastMessages возвращает последние count сообщений из стрима пользователя (без отметки о прочтении)
+func (r *RedisRepository) RangeLastMessages(
+	ctx context.Context,
+	userID int64,
+	login string,
+	count int64,
+) ([]domain.StreamMessage, error) {
+	streamKey := domain.StreamKey(userID, login)
+
+	msgs, err := r.client.XRevRangeN(ctx, streamKey, "+", "-", int64(count)).Result()
+	if err != nil {
+		if err == redis.Nil {
+			return []domain.StreamMessage{}, nil
+		}
+		return nil, fmt.Errorf("ошибка XRANGE: %w", err)
+	}
+
+	// Разворачиваем в хронологическом порядке (от старых к новым)
+	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
+		msgs[i], msgs[j] = msgs[j], msgs[i]
+	}
+
+	// Конвертируем и подгружаем payload
+	var messages []domain.StreamMessage
+	for _, m := range msgs {
+		sm := domain.StreamMessage{ID: m.ID, Fields: m.Values}
+		if nidStr, ok := m.Values["nid"].(string); ok {
+			payload, err := r.GetNotification(ctx, nidStr)
+			if err != nil {
+				slog.Warn("Ошибка загрузки payload", "error", err, "nid", nidStr)
+			}
+			sm.Payload = payload
+		}
+		messages = append(messages, sm)
+	}
+
+	return messages, nil
+}
+
+// GetReadStatuses возвращает признак прочтения для списка notification_id
+func (r *RedisRepository) GetReadStatuses(
+	ctx context.Context,
+	userID int64,
+	login string,
+	notificationIDs []string,
+) (map[string]bool, error) {
+	stateKey := domain.NotificationStateKey(userID, login)
+	result := make(map[string]bool, len(notificationIDs))
+	if len(notificationIDs) == 0 {
+		return result, nil
+	}
+
+	vals, err := r.client.HMGet(ctx, stateKey, notificationIDs...).Result()
+	if err != nil {
+		return nil, fmt.Errorf("ошибка HMGET статусов: %w", err)
+	}
+
+	for i, v := range vals {
+		read := false
+		if s, ok := v.(string); ok && s == "read" {
+			read = true
+		}
+		result[notificationIDs[i]] = read
+	}
+
+	return result, nil
 }
