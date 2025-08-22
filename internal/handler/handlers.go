@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"notification-mvp/internal/domain"
@@ -199,8 +200,53 @@ func (h *Handlers) PendingNotificationsHandler(w http.ResponseWriter, r *http.Re
 		totalPending += len(messages)
 	}
 
+	// Включаем read/unread если возможно (подгружаем статусы по пользователю)
+	enriched := make(map[string][]map[string]interface{})
+	for userKey, messages := range allPending {
+		// Разобрать userKey
+		parts := strings.SplitN(userKey, "-", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		userID, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil {
+			continue
+		}
+		login := parts[1]
+
+		// Собрать notificationIDs
+		var ids []string
+		for _, m := range messages {
+			if m.Payload != nil {
+				ids = append(ids, m.Payload.NotificationID)
+			}
+		}
+		readMap := map[string]bool{}
+		if len(ids) > 0 {
+			if m, err := h.repo.GetReadStatuses(r.Context(), userID, login, ids); err == nil {
+				readMap = m
+			}
+		}
+
+		var out []map[string]interface{}
+		for _, m := range messages {
+			item := map[string]interface{}{
+				"id": m.ID,
+			}
+			if m.Payload != nil {
+				item["payload"] = m.Payload
+				item["read"] = readMap[m.Payload.NotificationID]
+			} else {
+				item["payload"] = nil
+				item["read"] = true // истекшее считаем прочитанным/очищенным
+			}
+			out = append(out, item)
+		}
+		enriched[userKey] = out
+	}
+
 	response := map[string]interface{}{
-		"pending_notifications": allPending,
+		"pending_notifications": enriched,
 		"users_with_pending":    len(allPending),
 		"total_pending":         totalPending,
 		"timestamp":             time.Now().Format(time.RFC3339),
@@ -212,6 +258,70 @@ func (h *Handlers) PendingNotificationsHandler(w http.ResponseWriter, r *http.Re
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		h.logger.Error("Ошибка кодирования ответа pending notifications", "error", err)
 	}
+}
+
+// HistoryHandler возвращает последние 100 событий пользователя с read/unread
+func (h *Handlers) HistoryHandler(w http.ResponseWriter, r *http.Request) {
+	userIDStr := r.URL.Query().Get("user_id")
+	login := r.URL.Query().Get("login")
+	if userIDStr == "" || login == "" {
+		h.writeErrorResponse(w, http.StatusBadRequest, "Требуются параметры user_id и login")
+		return
+	}
+	userID, err := strconv.ParseInt(userIDStr, 10, 64)
+	if err != nil {
+		h.writeErrorResponse(w, http.StatusBadRequest, "Неверный формат user_id")
+		return
+	}
+
+	messages, err := h.repo.RangeLastMessages(r.Context(), userID, login, 100)
+	if err != nil {
+		h.logger.Error("Ошибка XRANGE", "error", err)
+		h.writeErrorResponse(w, http.StatusInternalServerError, "Ошибка получения истории")
+		return
+	}
+
+	// Собираем статусы read
+	var ids []string
+	for _, m := range messages {
+		if m.Payload != nil {
+			ids = append(ids, m.Payload.NotificationID)
+		}
+	}
+	readMap := map[string]bool{}
+	if len(ids) > 0 {
+		if m, err := h.repo.GetReadStatuses(r.Context(), userID, login, ids); err == nil {
+			readMap = m
+		}
+	}
+
+	var out []map[string]interface{}
+	for _, m := range messages {
+		item := map[string]interface{}{
+			"id": m.ID,
+		}
+		if m.Payload != nil {
+			item["payload"] = m.Payload
+			item["read"] = readMap[m.Payload.NotificationID]
+			item["status"] = domain.StatusUnread
+		} else {
+			item["payload"] = nil
+			item["read"] = true
+			item["status"] = domain.StatusAutoCleared
+		}
+		out = append(out, item)
+	}
+
+	resp := map[string]interface{}{
+		"user":      map[string]interface{}{"id": userID, "login": login},
+		"history":   out,
+		"count":     len(out),
+		"timestamp": time.Now().Format(time.RFC3339),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // AvailableUsersHandler возвращает список пользователей доступных для отправки

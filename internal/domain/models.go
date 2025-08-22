@@ -42,6 +42,7 @@ type PushPayload struct {
 	CreatedAt      time.Time `json:"created_at"`
 	Source         string    `json:"source"`
 	Status         string    `json:"status"`
+	Read           bool      `json:"read"`
 }
 
 // ReadEvent представляет событие прочтения от клиента
@@ -58,7 +59,7 @@ type ReadData struct {
 
 // NotifyResponse представляет ответ на запрос создания уведомления
 type NotifyResponse struct {
-	Results []NotifyResult `json:"results"`
+	Results []NotifyResult `json:"result"`
 }
 
 // NotifyResult представляет результат создания уведомления для одного получателя
@@ -90,6 +91,8 @@ const (
 	NotificationKeyPrefix = "notification:"
 	TTLSchedulerKeyPrefix = "notif:ttl:"
 	IdempotencyKeyPrefix  = "notify:req:"
+
+	NotificationStateKeyPrefix = "notification_state:"
 
 	ConsumerGroupName = "notifications"
 	NotificationTTL   = 15 * time.Minute // 15 минут как указано в ТЗ
@@ -123,4 +126,9 @@ func ConsumerID(userID int64) string {
 // TTLSchedulerEntry представляет запись в ZSET планировщика TTL
 func TTLSchedulerEntry(streamID, notificationID string) string {
 	return streamID + "|" + notificationID
+}
+
+// NotificationStateKey возвращает ключ хэша статусов прочтения пользователя
+func NotificationStateKey(userID int64, login string) string {
+	return NotificationStateKeyPrefix + UserKey(userID, login)
 }

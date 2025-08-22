@@ -1,247 +1,169 @@
-# Notification MVP Service
+# Notification MVP Service (Go + Redis Streams)
 
-MVP сервиса уведомлений на Go с использованием Redis Streams для доставки сообщений в реальном времени через WebSocket.
+## Обзор
+MVP сервиса уведомлений на Go, использующего Redis Streams для доставки в реальном времени через WebSocket с поддержкой:
+- Групповой публикации уведомлений по персональным стримам
+- TTL 15 минут для payload в Redis
+- Отправка новым и последним 100 событиям при подключении
+- ACK помечает `read`, данные не удаляются из стрима
+- WebUI для демонстрации (http://localhost:8080)
 
 ## Архитектура
+- HTTP API: `POST /api/v1/notify`
+- WebSocket: `GET /ws?user_id=&login=`
+- Redis:
+  - `stream:<user_id>-<login>` — XADD MAXLEN=100, хранит `nid`
+  - `notification:<uuid>` — payload, TTL=15m
+  - `notification_state:<user>` — HSET `<uuid>` = `read`
+- Consumer Group: `notifications` (per-user stream)
 
-Сервис построен на принципах чистой архитектуры и состоит из следующих компонентов:
+## Поток данных
+```
+[ Клиент (POST /notify) ]
+    |
+    v
+[ API-сервис ]
+    |---> SETEX notification:<uuid> (TTL=15m)
+    '---> XADD stream:<user> notification_id=<uuid> (MAXLEN=100)
+    
+[ Redis ]
+  ├── notification:<uuid> (payload, TTL=15m)
+  ├── stream:<user> [ {nid}, ... ]
+  └── notification_state:<user> [uuid → read]
 
-- **HTTP API** - принимает запросы на создание уведомлений через `POST /api/v1/notify`
-- **WebSocket Gateway** - обеспечивает доставку уведомлений клиентам в реальном времени
-- **Redis Streams** - персональные потоки для каждого пользователя с Consumer Groups
-- **TTL Janitor** - фоновый воркер для удаления просроченных уведомлений (15 минут)
-- **Group Maintenance** - воркер для обслуживания Consumer Groups и перехвата зависших сообщений
-
-## Особенности
-
-- ✅ **At-least-once доставка** с дедупликацией по `notification_id`
-- ✅ **Идемпотентность** через заголовок `Idempotency-Key`
-- ✅ **TTL 15 минут** для уведомлений с автоматической очисткой
-- ✅ **Персистентность** непрочитанных сообщений между подключениями
-- ✅ **Стабильные Consumer ID** для надежной доставки
-- ✅ **Автоматическое восстановление** зависших сообщений
-
-## Быстрый старт
-
-### С Docker Compose (рекомендуется)
-
-```bash
-# Запуск всех сервисов
-make docker-up
-
-# Открыть веб-клиент в браузере
-open http://localhost:8080
+[ WS-сервис ]
+   ├─ Registry: user → [ws1, ws2...]
+   ├─ Consumer (XREADGROUP)
+   ├─ Initial sync: XRANGE last 100 + HMGET read
+   └─ Dispatcher (payload + send → WS)
 ```
 
-### Локальная разработка
-
-```bash
-# 1. Запустить Redis
-make redis-local
-
-# 2. Запустить сервер (в одном терминале)
-make run
-
-# 3. Запустить клиент (в другом терминале)
-make client
-
-# 4. Отправить уведомление (в третьем терминале)
-make sender
-```
-
-## API
-
-### POST /api/v1/notify
-
-Создает уведомления для списка получателей.
-
-**Запрос:**
+## Контракты
+### HTTP: POST /api/v1/notify
+Request:
 ```json
 {
   "target": [
-    {"id": 1, "login": "user1"},
-    {"id": 2, "login": "user2"}
+    {"id": 1, "login": "admin_user"},
+    {"id": 2, "login": "post7"}
   ],
-  "message": "Новое сообщение",
-  "source": "chat-api",
-  "created_at": "2024-01-01T12:00:00Z"
+  "message": "Оператор…",
+  "created_at": "2023-10-27T10:00:00Z",
+  "source": "chat-control-api"
 }
 ```
-
-**Ответ (202 Accepted):**
+Response (202):
 ```json
 {
-  "results": [
-    {
-      "target": {"id": 1, "login": "user1"},
-      "notification_id": "uuid-1"
-    },
-    {
-      "target": {"id": 2, "login": "user2"}, 
-      "notification_id": "uuid-2"
-    }
+  "result": [
+    {"target": {"id":1,"login":"admin_user"}, "notification_id": "uuid1"},
+    {"target": {"id":2,"login":"post7"},       "notification_id": "uuid2"}
   ]
 }
 ```
 
-### WebSocket /ws
-
-Подключение для получения уведомлений в реальном времени.
-
-**Параметры:**
-- `user_id` - ID пользователя
-- `login` - логин пользователя
-
-**Пример:** `ws://localhost:8080/ws?user_id=1&login=test_user`
-
-## WebSocket протокол
-
-### Сообщение от сервера (уведомление)
+### WebSocket: GET /ws?user_id=&login=
+Сообщение от сервера:
 ```json
 {
   "type": "notification.push",
   "data": {
     "notification_id": "uuid",
     "stream_id": "1658926500000-0",
-    "message": "Текст уведомления",
+    "message": "…",
     "created_at": "2024-01-01T12:00:00Z",
     "source": "chat-api",
-    "status": "unread"
+    "status": "unread | auto_cleared",
+    "read": false
   }
 }
 ```
-
-### Подтверждение прочтения от клиента
+ACK от клиента:
 ```json
 {
   "type": "notification.read",
-  "data": {
-    "notification_id": "uuid",
-    "stream_id": "1658926500000-0"
-  }
+  "data": {"notification_id":"uuid","stream_id":"1658926500000-0"}
 }
 ```
+ACK от сервера:
+```json
+{"type":"notification.read.ack","data":{"notification_id":"uuid","stream_id":"1658926500000-0"}}
+```
 
-### Подтверждение от сервера
+### Admin API
+- GET `/api/v1/admin/clients`
+- GET `/api/v1/admin/users`
+- GET `/api/v1/admin/pending` — теперь включает `read` (если payload есть)
+- GET `/api/v1/admin/history?user_id=&login=` — XRANGE последних 100 с `read/unread`
+
+Пример ответа `/api/v1/admin/pending`:
 ```json
 {
-  "type": "notification.read.ack",
-  "data": {
-    "notification_id": "uuid",
-    "stream_id": "1658926500000-0"
-  }
+  "pending_notifications": {
+    "1-alice": [
+      {"id": "1234-0", "payload": {"notification_id": "uuid", "message": "Hello", "created_at": "2024-01-01T12:00:00Z"}, "read": false}
+    ]
+  },
+  "total_pending": 1,
+  "users_with_pending": 1
 }
 ```
 
-## Команды Make
+Пример ответа `/api/v1/admin/history`:
+```json
+{
+  "user": {"id": 1, "login": "alice"},
+  "history": [
+    {"id": "1234-0", "payload": {"notification_id":"uuid","message":"Hi"}, "read": true, "status": "unread"}
+  ],
+  "count": 1
+}
+```
 
+## Веб-интерфейс (http://localhost:8080)
+Функции:
+- Список подключенных клиентов (автообновление 3s)
+- Отправка уведомлений: manual, всем подключенным, выбор нескольких
+- Pending уведомления (автообновление 5s)
+- История пользователя (последние 100) с бейджами READ/UNREAD
+- Авто-ACK только для непрочитанных
+
+Демо сценарии:
+1) Несколько клиентов — отправка всем подключенным
+2) Pending — для оффлайн пользователя; появится после повторной отправки
+3) Real-time мониторинг — автообновляемые счетчики и списки
+
+## Сборка и запуск
+С Docker Compose:
 ```bash
-make help              # Показать все доступные команды
-make build             # Собрать все бинарники
-make run               # Запустить сервер
-make client            # Запустить тестовый клиент
-make client-auto       # Клиент с автоподтверждением
-make sender            # Отправить тестовое уведомление
-make sender-multiple   # Отправить несколько уведомлений
-
-# Docker команды
-make docker-build      # Собрать Docker образы
-make docker-up         # Запустить в Docker
-make docker-down       # Остановить Docker сервисы
-make docker-logs       # Показать логи
-
-# Утилиты разработки
-make redis-local       # Запустить Redis локально
-make redis-stop        # Остановить Redis
-make clean             # Очистить бинарники
+make docker-up
+# Открыть UI
+xdg-open http://localhost:8080 || open http://localhost:8080
 ```
-
-## Тестирование
-
-### Веб-клиент
-Откройте http://localhost:8080 для интерактивного тестирования через браузер.
-
-### CLI клиенты
-
+Локально:
 ```bash
-# Клиент с ручным подтверждением
-./bin/client -user=1 -login=test_user
-
-# Клиент с автоподтверждением
-./bin/client -user=1 -login=test_user -auto
-
-# Отправитель уведомлений
-./bin/sender -user=1 -login=test_user -message="Hello" -count=5
-```
-
-## Структура проекта
-
-```
-.
-├── cmd/                    # Точки входа приложений
-│   ├── server/            # Основной сервер
-│   ├── client/            # CLI клиент для тестирования
-│   └── sender/            # CLI отправитель уведомлений
-├── internal/              # Внутренняя логика
-│   ├── config/           # Конфигурация
-│   ├── domain/           # Модели и интерфейсы
-│   ├── handler/          # HTTP и WebSocket обработчики
-│   ├── repository/       # Слой данных (Redis)
-│   ├── service/          # Бизнес-логика
-│   └── worker/           # Фоновые воркеры
-├── docker-compose.yaml   # Конфигурация Docker
-├── Dockerfile           # Многоэтапная сборка
-├── Makefile            # Команды автоматизации
-└── README.md           # Документация
+make redis-local
+make run        # сервер
+make client     # ws клиент
+make sender     # отправитель
 ```
 
 ## Конфигурация
+- `SERVER_ADDR` (default `:8080`)
+- `REDIS_ADDR` (default `localhost:6379`)
+- `REDIS_PASSWORD`
 
-Переменные окружения:
+## Технические детали
+- Redis Streams + Consumer Groups, ConsumerID = `user:<id>`
+- XADD MAXLEN=100, payload TTL = 15m
+- Initial sync: XRANGE 100 + HMGET read
+- ACK: XACK + HSET `notification_state:<user>` `<uuid>` = `read`
 
-| Переменная       | По умолчанию     | Описание            |
-| ---------------- | ---------------- | ------------------- |
-| `SERVER_ADDR`    | `:8080`          | Адрес HTTP сервера  |
-| `REDIS_ADDR`     | `localhost:6379` | Адрес Redis сервера |
-| `REDIS_PASSWORD` | (пусто)          | Пароль Redis        |
+## Ограничения
+- Без аутентификации/метрик и т.п. (MVP)
 
-## Логирование
-
-Используется встроенный пакет `slog` с текстовым форматированием. Уровни логирования:
-
-- **DEBUG** - детальная отладочная информация
-- **INFO** - общая информация о работе сервиса  
-- **WARN** - предупреждения (не критичные ошибки)
-- **ERROR** - ошибки требующие внимания
-
-## Требования
-
-- Go 1.25+
-- Redis 6.0+ (для поддержки Streams)
-- Docker и Docker Compose (для контейнеризации)
-
-## Производительность
-
-- Время публикации: < 50 мс на получателя (требование ТЗ)
-- TTL уведомлений: 15 минут
-- Блокировка WebSocket: 30 секунд
-- Обслуживание групп: каждые 2 минуты
-- Очистка TTL: каждую минуту
-
-## Ограничения MVP
-
-- Нет аутентификации/авторизации
-- Нет rate limiting
-- Нет метрик Prometheus
-- Нет персистентного хранения метаданных
-- Веб-клиент базовый (только для демо)
-
-## Масштабирование
-
-Для продакшена рекомендуется:
-
-1. **Горизонтальное масштабирование**: несколько инстансов сервера
-2. **Redis Cluster**: для высокой доступности
-3. **Load Balancer**: с поддержкой sticky sessions для WebSocket
-4. **Мониторинг**: Prometheus + Grafana для метрик
-5. **Трейсинг**: OpenTelemetry для отслеживания запросов
+## Структура
+```
+cmd/     # server, client, sender
+internal/# domain, repository, service, handler, websocket, worker
+```
