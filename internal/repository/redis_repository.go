@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand"
+	"strconv"
 	"strings"
 	"time"
 
@@ -228,6 +230,73 @@ func (r *RedisRepository) AckMessage(
 		"stream_id", streamID,
 		"user", domain.UserKey(userID, login))
 
+	return nil
+}
+
+// AcquireConsumerLock пытается получить эксклюзивную блокировку чтения для пользователя
+func (r *RedisRepository) AcquireConsumerLock(
+	ctx context.Context,
+	userID int64,
+	login string,
+	podID string,
+	ttl time.Duration,
+) (bool, error) {
+	key := domain.ConsumerLockKey(userID, login)
+	ok, err := r.client.SetNX(ctx, key, podID, ttl).Result()
+	if err != nil {
+		return false, fmt.Errorf("ошибка установки consumer lock: %w", err)
+	}
+	return ok, nil
+}
+
+// RenewConsumerLock продлевает блокировку если она принадлежит podID
+func (r *RedisRepository) RenewConsumerLock(
+	ctx context.Context,
+	userID int64,
+	login string,
+	podID string,
+	ttl time.Duration,
+) (bool, error) {
+	key := domain.ConsumerLockKey(userID, login)
+	val, err := r.client.Get(ctx, key).Result()
+	if err != nil {
+		if err == redis.Nil {
+			return false, nil
+		}
+		return false, fmt.Errorf("ошибка чтения consumer lock: %w", err)
+	}
+	if val != podID {
+		return false, nil
+	}
+	// продляем с небольшой джиттер-защитой от дребезга
+	extend := ttl + time.Duration(rand.Intn(250))*time.Millisecond
+	if err := r.client.PExpire(ctx, key, extend).Err(); err != nil {
+		return false, fmt.Errorf("ошибка продления consumer lock: %w", err)
+	}
+	return true, nil
+}
+
+// ReleaseConsumerLock снимает блокировку если она принадлежит podID
+func (r *RedisRepository) ReleaseConsumerLock(
+	ctx context.Context,
+	userID int64,
+	login string,
+	podID string,
+) error {
+	key := domain.ConsumerLockKey(userID, login)
+	val, err := r.client.Get(ctx, key).Result()
+	if err != nil {
+		if err == redis.Nil {
+			return nil
+		}
+		return fmt.Errorf("ошибка чтения consumer lock: %w", err)
+	}
+	if val != podID {
+		return nil
+	}
+	if err := r.client.Del(ctx, key).Err(); err != nil {
+		return fmt.Errorf("ошибка удаления consumer lock: %w", err)
+	}
 	return nil
 }
 
@@ -517,4 +586,51 @@ func (r *RedisRepository) GetReadStatuses(
 	}
 
 	return result, nil
+}
+
+// SetUserRetentionDays сохраняет срок хранения для пользователя (1..15 дней)
+func (r *RedisRepository) SetUserRetentionDays(ctx context.Context, userID int64, login string, days int) error {
+	key := domain.RetentionKey(userID, login)
+	if days < 1 {
+		days = 1
+	}
+	if days > 15 {
+		days = 15
+	}
+	return r.client.Set(ctx, key, fmt.Sprintf("%d", days), 0).Err()
+}
+
+// GetUserRetentionDays возвращает срок хранения в днях (дефолт 7)
+func (r *RedisRepository) GetUserRetentionDays(ctx context.Context, userID int64, login string) (int, error) {
+	key := domain.RetentionKey(userID, login)
+	val, err := r.client.Get(ctx, key).Result()
+	if err != nil {
+		if err == redis.Nil {
+			return 7, nil
+		}
+		return 7, fmt.Errorf("ошибка чтения retention: %w", err)
+	}
+	d, convErr := strconv.Atoi(val)
+	if convErr != nil {
+		return 7, nil
+	}
+	if d < 1 {
+		d = 1
+	} else if d > 15 {
+		d = 15
+	}
+	return d, nil
+}
+
+// TrimUserStreamByRetention делает XTRIM MINID по времени в зависимости от retention
+func (r *RedisRepository) TrimUserStreamByRetention(ctx context.Context, userID int64, login string) error {
+	days, err := r.GetUserRetentionDays(ctx, userID, login)
+	if err != nil {
+		return err
+	}
+	cutoff := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+	minID := fmt.Sprintf("%d-0", cutoff.UnixMilli())
+	streamKey := domain.StreamKey(userID, login)
+	// MINID доступен в Redis 7.0+
+	return r.client.XTrimMinID(ctx, streamKey, minID).Err()
 }

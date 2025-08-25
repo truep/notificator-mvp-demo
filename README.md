@@ -6,7 +6,7 @@ MVP сервиса уведомлений на Go, использующего Re
 - TTL 15 минут для payload в Redis
 - Отправка новым и последним 100 событиям при подключении
 - ACK помечает `read`, данные не удаляются из стрима
-- WebUI для демонстрации (http://localhost:8080)
+- WebUI для демонстрации (http://localhost:8081)
 
 ## Архитектура
 - HTTP API: `POST /api/v1/notify`
@@ -16,6 +16,7 @@ MVP сервиса уведомлений на Go, использующего Re
   - `notification:<uuid>` — payload, TTL=15m
   - `notification_state:<user>` — HSET `<uuid>` = `read`
 - Consumer Group: `notifications` (per-user stream)
+- Метрики Prometheus: `/metrics`
 
 ## Поток данных
 ```
@@ -55,7 +56,7 @@ Request:
 Response (202):
 ```json
 {
-  "result": [
+  "results": [
     {"target": {"id":1,"login":"admin_user"}, "notification_id": "uuid1"},
     {"target": {"id":2,"login":"post7"},       "notification_id": "uuid2"}
   ]
@@ -93,7 +94,7 @@ ACK от сервера:
 ### Admin API
 - GET `/api/v1/admin/clients`
 - GET `/api/v1/admin/users`
-- GET `/api/v1/admin/pending` — теперь включает `read` (если payload есть)
+- GET `/api/v1/admin/pending` — включает `read` (если payload есть)
 - GET `/api/v1/admin/history?user_id=&login=` — XRANGE последних 100 с `read/unread`
 
 Пример ответа `/api/v1/admin/pending`:
@@ -120,13 +121,12 @@ ACK от сервера:
 }
 ```
 
-## Веб-интерфейс (http://localhost:8080)
+## Веб-интерфейс (http://localhost:8081)
 Функции:
 - Список подключенных клиентов (автообновление 3s)
 - Отправка уведомлений: manual, всем подключенным, выбор нескольких
 - Pending уведомления (автообновление 5s)
 - История пользователя (последние 100) с бейджами READ/UNREAD
-- Авто-ACK только для непрочитанных
 
 Демо сценарии:
 1) Несколько клиентов — отправка всем подключенным
@@ -138,7 +138,7 @@ ACK от сервера:
 ```bash
 make docker-up
 # Открыть UI
-xdg-open http://localhost:8080 || open http://localhost:8080
+xdg-open http://localhost:8081 || open http://localhost:8081
 ```
 Локально:
 ```bash
@@ -158,12 +158,16 @@ make sender     # отправитель
 - XADD MAXLEN=100, payload TTL = 15m
 - Initial sync: XRANGE 100 + HMGET read
 - ACK: XACK + HSET `notification_state:<user>` `<uuid>` = `read`
+- Per-user retention: `notif:retention:<user>` + XTRIM MINID
+- Heartbeat: `notif:pods:hb` (HSET + очистка)
+- Межподовая шина: `notif:bus:<podID>` (router)
+- Метрики Prometheus: `/metrics`
 
 ## Ограничения
-- Без аутентификации/метрик и т.п. (MVP)
+- Без аутентификации (MVP)
 
 ## Структура
 ```
 cmd/     # server, client, sender
-internal/# domain, repository, service, handler, websocket, worker
+internal/# domain, repository, service, handler, websocket, worker, metrics
 ```

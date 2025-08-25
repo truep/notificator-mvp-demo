@@ -2,21 +2,26 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"notification-mvp/internal/config"
+	"notification-mvp/internal/domain"
 	"notification-mvp/internal/handler"
 	"notification-mvp/internal/repository"
 	"notification-mvp/internal/service"
 	"notification-mvp/internal/websocket"
 	"notification-mvp/internal/worker"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -46,7 +51,7 @@ func main() {
 
 	// Инициализируем слои
 	repo := repository.NewRedisRepository(rdb)
-	notifyService := service.NewNotificationService(repo, logger)
+	notifyService := service.NewNotificationService(repo, logger).WithPodID(cfg.PodID)
 	connectionManager := websocket.NewConnectionManager(logger)
 	handlers := handler.NewHandlers(notifyService, repo, connectionManager, logger)
 
@@ -57,6 +62,7 @@ func main() {
 	mux.HandleFunc("POST /api/v1/notify", handlers.NotifyHandler)
 	mux.HandleFunc("GET /ws", handlers.WebSocketHandler)
 	mux.HandleFunc("GET /health", handlers.HealthHandler)
+	mux.Handle("/metrics", promhttp.Handler())
 
 	// Админ API
 	mux.HandleFunc("GET /api/v1/admin/clients", handlers.ConnectedClientsHandler)
@@ -64,14 +70,40 @@ func main() {
 	mux.HandleFunc("GET /api/v1/admin/users", handlers.AvailableUsersHandler)
 	mux.HandleFunc("GET /api/v1/admin/history", handlers.HistoryHandler)
 
-	mux.HandleFunc("GET /", handlers.IndexHandler) // Для тестового клиента
+	mux.HandleFunc("/", handlers.IndexHandler) // Для тестового клиента
 
 	// Запускаем фоновые воркеры
 	ttlJanitor := worker.NewTTLJanitor(repo, logger)
 	groupMaintenance := worker.NewGroupMaintenance(repo, logger)
+	hbWorker := worker.NewHeartbeatWorker(rdb, cfg.PodID, logger)
+	retentionTrimmer := worker.NewRetentionTrimmer(repo, logger)
 
 	go ttlJanitor.Start(ctx)
 	go groupMaintenance.Start(ctx)
+	go hbWorker.Start(ctx)
+	go retentionTrimmer.Start(ctx)
+
+	// Межподовый роутер шины (E4, упрощенный)
+	router := worker.NewInterPodRouter(rdb, cfg.PodID, logger, func(userKey string, payload json.RawMessage) bool {
+		// userKey = "id-login"
+		// попытаемся разослать локальным сессиям
+		// payload — это уже клиентский PushMessage JSON
+		var msg domain.WebSocketMessage
+		if err := json.Unmarshal(payload, &msg); err != nil {
+			return false
+		}
+		// извлекаем id/login из userKey
+		parts := strings.SplitN(userKey, "-", 2)
+		if len(parts) != 2 {
+			return false
+		}
+		uid, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil {
+			return false
+		}
+		return connectionManager.SendToUser(uid, parts[1], msg)
+	})
+	go router.Start(ctx)
 
 	slog.Info("Запущены фоновые воркеры")
 

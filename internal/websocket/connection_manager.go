@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"notification-mvp/internal/domain"
+	"notification-mvp/internal/metrics"
 )
 
 // ClientInfo содержит информацию о подключенном клиенте
@@ -41,7 +42,7 @@ func (cm *ConnectionManager) AddClient(userID int64, login string, conn domain.W
 	// Если клиент уже подключен, закрываем старое соединение
 	if existing, exists := cm.clients[key]; exists {
 		cm.logger.Info("Закрытие старого соединения для клиента", "user_id", userID, "login", login)
-		if err := existing.Connection.Close();err != nil {
+		if err := existing.Connection.Close(); err != nil {
 			slog.Error(err.Error(), slog.Any("error", err))
 		}
 	}
@@ -54,6 +55,7 @@ func (cm *ConnectionManager) AddClient(userID int64, login string, conn domain.W
 	}
 
 	cm.logger.Info("Клиент подключен", "user_id", userID, "login", login, "total_clients", len(cm.clients))
+	metrics.WSConnections.Set(float64(len(cm.clients)))
 }
 
 // RemoveClient удаляет клиента
@@ -65,6 +67,7 @@ func (cm *ConnectionManager) RemoveClient(userID int64, login string) {
 	if _, exists := cm.clients[key]; exists {
 		delete(cm.clients, key)
 		cm.logger.Info("Клиент отключен", "user_id", userID, "login", login, "total_clients", len(cm.clients))
+		metrics.WSConnections.Set(float64(len(cm.clients)))
 	}
 }
 
@@ -120,6 +123,24 @@ func (cm *ConnectionManager) BroadcastToAll(message interface{}) {
 				"error", err)
 		}
 	}
+}
+
+// SendToUser отправляет сообщение конкретному пользователю, если он подключен локально
+func (cm *ConnectionManager) SendToUser(userID int64, login string, message interface{}) bool {
+	cm.mutex.RLock()
+	client, ok := cm.clients[makeClientKey(userID, login)]
+	cm.mutex.RUnlock()
+	if !ok {
+		return false
+	}
+	if err := client.Connection.WriteJSON(message); err != nil {
+		cm.logger.Warn("Ошибка отправки сообщения пользователю",
+			"user_id", userID,
+			"login", login,
+			"error", err)
+		return false
+	}
+	return true
 }
 
 // GetUniqueUsers возвращает список уникальных пользователей (для множественной отправки)

@@ -95,19 +95,18 @@ dev-setup: ## Настроить окружение для разработки
 demo: ## Демонстрация работы сервиса
 	@echo "$(GREEN)Демонстрация работы сервиса...$(NC)"
 	@echo "$(YELLOW)Запуск в фоне...$(NC)"
-	@./$(SERVER_BIN) &
-	@SERVER_PID=$$!; \
-	sleep 3; \
-	echo "$(GREEN)Отправка уведомления...$(NC)"; \
-	./$(SENDER_BIN) -user=1 -login=demo_user -message="Demo notification"; \
-	sleep 2; \
-	echo "$(GREEN)Остановка сервера...$(NC)"; \
-	kill $$SERVER_PID || true
+	@SERVER_ADDR=:8081 ./$(SERVER_BIN) & echo $$! > .server_demo_pid
+	@sleep 3
+	@echo "$(GREEN)Отправка уведомления...$(NC)"
+	@./$(SENDER_BIN) -addr=http://localhost:8081 -user=1 -login=demo_user -message="Demo notification"
+	@sleep 2
+	@echo "$(GREEN)Остановка сервера...$(NC)"
+	@kill `cat .server_demo_pid` || true; rm -f .server_demo_pid
 
 # Специальные цели для разработки
 redis-local: ## Запустить Redis локально в Docker
 	@echo "$(GREEN)Запуск Redis...$(NC)"
-	@docker run --rm -d --name redis-local -p 6379:6379 redis:7-alpine
+	@docker start redis-local >/dev/null 2>&1 || docker run -d --name redis-local -p 6379:6379 redis:7-alpine
 	@echo "$(GREEN)Redis запущен на порту 6379$(NC)"
 
 redis-stop: ## Остановить локальный Redis

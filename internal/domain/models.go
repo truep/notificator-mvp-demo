@@ -59,7 +59,7 @@ type ReadData struct {
 
 // NotifyResponse представляет ответ на запрос создания уведомления
 type NotifyResponse struct {
-	Results []NotifyResult `json:"result"`
+	Results []NotifyResult `json:"results"`
 }
 
 // NotifyResult представляет результат создания уведомления для одного получателя
@@ -74,11 +74,40 @@ type WebSocketMessage struct {
 	Data interface{} `json:"data"`
 }
 
+// RetentionSetEvent задает новый срок хранения (в днях)
+type RetentionSetEvent struct {
+	Type string           `json:"type"`
+	Data RetentionSetData `json:"data"`
+}
+
+type RetentionSetData struct {
+	Days int `json:"days"`
+}
+
+// SyncRequestEvent запрашивает последние N событий
+type SyncRequestEvent struct {
+	Type string          `json:"type"`
+	Data SyncRequestData `json:"data"`
+}
+
+type SyncRequestData struct {
+	Limit int `json:"limit"`
+}
+
+// SyncResponse содержит последние события и их статусы
+type SyncResponse struct {
+	Type string           `json:"type"`
+	Data []map[string]any `json:"data"`
+}
+
 // Constants для типов сообщений
 const (
 	MessageTypeNotificationPush = "notification.push"
 	MessageTypeNotificationRead = "notification.read"
 	MessageTypeNotificationAck  = "notification.read.ack"
+	MessageTypeRetentionSet     = "retention.set"
+	MessageTypeSyncRequest      = "sync.request"
+	MessageTypeSyncResponse     = "sync.response"
 	MessageTypeError            = "error"
 
 	StatusUnread      = "unread"
@@ -93,6 +122,8 @@ const (
 	IdempotencyKeyPrefix  = "notify:req:"
 
 	NotificationStateKeyPrefix = "notification_state:"
+	ConsumerLockKeyPrefix      = "notif:lock:consumer:"
+	RetentionKeyPrefix         = "notif:retention:"
 
 	ConsumerGroupName = "notifications"
 	NotificationTTL   = 15 * time.Minute // 15 минут как указано в ТЗ
@@ -131,4 +162,14 @@ func TTLSchedulerEntry(streamID, notificationID string) string {
 // NotificationStateKey возвращает ключ хэша статусов прочтения пользователя
 func NotificationStateKey(userID int64, login string) string {
 	return NotificationStateKeyPrefix + UserKey(userID, login)
+}
+
+// ConsumerLockKey возвращает ключ блокировки consumer для пользователя
+func ConsumerLockKey(userID int64, login string) string {
+	return ConsumerLockKeyPrefix + UserKey(userID, login)
+}
+
+// RetentionKey возвращает ключ хранения персистентного TTL профиля пользователя
+func RetentionKey(userID int64, login string) string {
+	return RetentionKeyPrefix + UserKey(userID, login)
 }

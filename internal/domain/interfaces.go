@@ -63,6 +63,20 @@ type NotificationRepository interface {
 
 	// GetReadStatuses возвращает статус прочтения для списка notification_id
 	GetReadStatuses(ctx context.Context, userID int64, login string, notificationIDs []string) (map[string]bool, error)
+
+	// Retention per-user
+	SetUserRetentionDays(ctx context.Context, userID int64, login string, days int) error
+	GetUserRetentionDays(ctx context.Context, userID int64, login string) (int, error)
+	TrimUserStreamByRetention(ctx context.Context, userID int64, login string) error
+
+	// AcquireConsumerLock пытается получить эксклюзивную блокировку чтения для пользователя
+	AcquireConsumerLock(ctx context.Context, userID int64, login string, podID string, ttl time.Duration) (bool, error)
+
+	// RenewConsumerLock продлевает блокировку если она принадлежит podID
+	RenewConsumerLock(ctx context.Context, userID int64, login string, podID string, ttl time.Duration) (bool, error)
+
+	// ReleaseConsumerLock снимает блокировку если она принадлежит podID
+	ReleaseConsumerLock(ctx context.Context, userID int64, login string, podID string) error
 }
 
 // NotificationService определяет бизнес-логику работы с уведомлениями

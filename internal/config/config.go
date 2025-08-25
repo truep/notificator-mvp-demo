@@ -10,6 +10,7 @@ type Config struct {
 	RedisAddr     string
 	RedisPassword string
 	RedisDB       int
+	PodID         string
 }
 
 // Load загружает конфигурацию из переменных окружения
@@ -19,6 +20,7 @@ func Load() *Config {
 		RedisAddr:     getEnv("REDIS_ADDR", "localhost:6379"),
 		RedisPassword: getEnv("REDIS_PASSWORD", ""),
 		RedisDB:       0, // Всегда используем DB 0 для простоты
+		PodID:         defaultPodID(),
 	}
 }
 
@@ -27,4 +29,14 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+func defaultPodID() string {
+	if v := os.Getenv("POD_ID"); v != "" {
+		return v
+	}
+	if h, err := os.Hostname(); err == nil && h != "" {
+		return h
+	}
+	return "pod-unknown"
 }
