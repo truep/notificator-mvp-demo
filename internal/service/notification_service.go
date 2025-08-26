@@ -10,12 +10,14 @@ import (
 	"time"
 
 	"notification-mvp/internal/domain"
+	"notification-mvp/internal/metrics"
 )
 
 // NotificationService реализует бизнес-логику работы с уведомлениями
 type NotificationService struct {
 	repo   domain.NotificationRepository
 	logger *slog.Logger
+	podID  string
 }
 
 // NewNotificationService создает новый экземпляр NotificationService
@@ -24,6 +26,12 @@ func NewNotificationService(repo domain.NotificationRepository, logger *slog.Log
 		repo:   repo,
 		logger: logger,
 	}
+}
+
+// WithPodID задает идентификатор текущего pod для распределенной блокировки
+func (s *NotificationService) WithPodID(podID string) *NotificationService {
+	s.podID = podID
+	return s
 }
 
 // CreateNotifications создает уведомления для списка получателей
@@ -121,6 +129,37 @@ func (s *NotificationService) HandleWebSocketConnection(
 	// Канал для ошибок
 	errChan := make(chan error, 2)
 
+	// Захватываем consumer-lock (если задан podID)
+	const lockTTL = 60 * time.Second
+	if s.podID != "" {
+		ok, err := s.repo.AcquireConsumerLock(wsCtx, userID, login, s.podID, lockTTL)
+		if err != nil {
+			s.logger.Warn("Ошибка захвата consumer-lock", "error", err, "user_id", userID, "login", login)
+		} else if !ok {
+			s.logger.Info("Consumer-lock уже занят другим pod — продолжаем только локальную доставку", "user_id", userID, "login", login)
+		} else {
+			s.logger.Debug("Захвачен consumer-lock", "user_id", userID, "login", login, "pod", s.podID)
+			// Продление lock в фоне
+			go func() {
+				ticker := time.NewTicker(20 * time.Second)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-wsCtx.Done():
+						return
+					case <-ticker.C:
+						if ok, _ := s.repo.RenewConsumerLock(wsCtx, userID, login, s.podID, lockTTL); !ok {
+							// Потеряли lock
+							s.logger.Info("Потерян consumer-lock при продлении", "user_id", userID, "login", login)
+							return
+						}
+					}
+				}
+			}()
+			defer func() { _ = s.repo.ReleaseConsumerLock(context.Background(), userID, login, s.podID) }()
+		}
+	}
+
 	// Горутина для чтения сообщений от клиента (обработка ACK)
 	go s.handleClientMessages(wsCtx, userID, login, conn, errChan)
 
@@ -153,15 +192,56 @@ func (s *NotificationService) handleClientMessages(
 		case <-ctx.Done():
 			return
 		default:
-			var msg domain.ReadEvent
-			if err := conn.ReadJSON(&msg); err != nil {
+			var raw domain.WebSocketMessage
+			if err := conn.ReadJSON(&raw); err != nil {
 				errChan <- fmt.Errorf("ошибка чтения сообщения от клиента: %w", err)
 				return
 			}
 
-			if err := s.handleReadAck(ctx, userID, login, &msg, conn); err != nil {
-				s.logger.Error("Ошибка обработки ACK", "error", err)
-				// Не завершаем соединение из-за ошибки ACK
+			switch raw.Type {
+			case domain.MessageTypeNotificationRead:
+				var read domain.ReadEvent
+				read.Type = raw.Type
+				if m, ok := raw.Data.(map[string]interface{}); ok {
+					if v, ok := m["notification_id"].(string); ok {
+						read.Data.NotificationID = v
+					}
+					if v, ok := m["stream_id"].(string); ok {
+						read.Data.StreamID = v
+					}
+				}
+				if err := s.handleReadAck(ctx, userID, login, &read, conn); err != nil {
+					s.logger.Error("Ошибка обработки ACK", "error", err)
+				}
+			case domain.MessageTypeRetentionSet:
+				var ev domain.RetentionSetEvent
+				ev.Type = raw.Type
+				if m, ok := raw.Data.(map[string]interface{}); ok {
+					if v, ok := m["days"].(float64); ok {
+						ev.Data.Days = int(v)
+					}
+				}
+				if ev.Data.Days >= 1 && ev.Data.Days <= 15 {
+					if err := s.repo.SetUserRetentionDays(ctx, userID, login, ev.Data.Days); err != nil {
+						s.logger.Warn("Ошибка установки retention", "error", err)
+					}
+				}
+			case domain.MessageTypeSyncRequest:
+				var ev domain.SyncRequestEvent
+				ev.Type = raw.Type
+				if m, ok := raw.Data.(map[string]interface{}); ok {
+					if v, ok := m["limit"].(float64); ok {
+						ev.Data.Limit = int(v)
+					}
+				}
+				if ev.Data.Limit <= 0 || ev.Data.Limit > 1000 {
+					ev.Data.Limit = 100
+				}
+				if err := s.deliverLastMessagesWithRead(ctx, userID, login, conn, int64(ev.Data.Limit)); err != nil {
+					s.logger.Warn("Ошибка sync.request", "error", err)
+				}
+			default:
+				// игнорируем неизвестные
 			}
 		}
 	}
@@ -328,6 +408,12 @@ func (s *NotificationService) sendMessageToClient(conn domain.WebSocketConnectio
 			Read:           false,
 		}
 		status = domain.StatusUnread
+		// метрики
+		metrics.NotificationsSent.Inc()
+		latency := time.Since(msg.Payload.CreatedAt).Milliseconds()
+		if latency > 0 {
+			metrics.DeliveryLatencyMs.Observe(float64(latency))
+		}
 	} else {
 		// Payload отсутствует - уведомление истекло
 		nid := ""
@@ -344,6 +430,7 @@ func (s *NotificationService) sendMessageToClient(conn domain.WebSocketConnectio
 			Read:           true,
 		}
 		status = domain.StatusAutoCleared
+		metrics.NotificationsAutoCleared.Inc()
 	}
 
 	pushMessage := domain.PushMessage{
@@ -393,6 +480,7 @@ func (s *NotificationService) handleReadAck(
 	if err := conn.WriteJSON(ackMessage); err != nil {
 		return fmt.Errorf("ошибка отправки ACK: %w", err)
 	}
+	metrics.NotificationsAcked.Inc()
 
 	s.logger.Debug("Обработан ACK от клиента",
 		"notification_id", readEvent.Data.NotificationID,
